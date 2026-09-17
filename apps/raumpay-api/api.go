@@ -84,6 +84,7 @@ func (a *api) handler() http.Handler {
 	mux.HandleFunc("GET /v1/payments/{id}", a.requireKey(a.merchantKey, a.getPayment))
 	mux.HandleFunc("POST /v1/payments/{id}/confirm", a.requireKey(a.simulatorKey, a.confirmPayment))
 	mux.HandleFunc("POST /v1/qr", a.requireKey(a.merchantKey, a.createDynamicQR))
+	mux.HandleFunc("GET /v1/checkout/{id}", a.checkoutStatus)
 	mux.HandleFunc("POST /v1/payments/{id}/refunds", a.requireKey(a.merchantKey, a.createRefund))
 	mux.HandleFunc("GET /v1/refunds/{id}", a.requireKey(a.merchantKey, a.getRefund))
 	return a.securityHeaders(mux)
@@ -184,6 +185,23 @@ func (a *api) expireIfDue(p *payment) {
 			p.Status = statusExpired
 		}
 	}
+}
+
+// checkoutStatus is a public, minimal projection for hosted checkout polling:
+// no merchant references, no amounts beyond what the payer already knows.
+func (a *api) checkoutStatus(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	p := a.payments[r.PathValue("id")]
+	if p != nil {
+		a.expireIfDue(p)
+	}
+	a.mu.Unlock()
+	if p == nil {
+		httpError(w, http.StatusNotFound, "payment_not_found")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"id": p.ID, "status": p.Status})
 }
 
 func (a *api) listPayments(w http.ResponseWriter, r *http.Request) {

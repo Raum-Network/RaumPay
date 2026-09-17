@@ -254,6 +254,32 @@ func mustAtoi(s string) int64 {
 	return n
 }
 
+func TestCheckoutPublicStatus(t *testing.T) {
+	h := newTestAPI(t).handler()
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, "co1", `{"amount":2500,"currency":"INR","merchant_reference":"ORDER-CO"}`)
+	var created struct{ ID string }
+	json.Unmarshal(rec.Body.Bytes(), &created)
+
+	got := doJSON(t, h, http.MethodGet, "/v1/checkout/"+created.ID, "", "", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("public checkout status: got %d", got.Code)
+	}
+	var st struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	json.Unmarshal(got.Body.Bytes(), &st)
+	if st.ID != created.ID || st.Status != statusCreated {
+		t.Fatalf("bad checkout payload: %+v", st)
+	}
+	if strings.Contains(got.Body.String(), "ORDER-CO") {
+		t.Fatal("checkout status must not leak merchant reference")
+	}
+	if got := doJSON(t, h, http.MethodGet, "/v1/checkout/pay_er_nope", "", "", ""); got.Code != http.StatusNotFound {
+		t.Fatalf("missing: want 404, got %d", got.Code)
+	}
+}
+
 func TestExpiry(t *testing.T) {
 	a := newTestAPI(t)
 	h := a.handler()
