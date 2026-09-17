@@ -150,9 +150,22 @@ func (a *api) createPayment(w http.ResponseWriter, r *http.Request) {
 	a.writePayment(w, p.ID, http.StatusCreated)
 }
 
+// expireIfDue flips non-final payments past their expiry to EXPIRED.
+// Caller must hold a.mu.
+func (a *api) expireIfDue(p *payment) {
+	if p.Status == statusCreated || p.Status == statusRequiresAction || p.Status == statusProcessing {
+		if time.Now().UTC().After(p.ExpiresAt) {
+			p.Status = statusExpired
+		}
+	}
+}
+
 func (a *api) getPayment(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if p := a.payments[r.PathValue("id")]; p != nil {
+		a.expireIfDue(p)
+	}
 	a.writePayment(w, r.PathValue("id"), http.StatusOK)
 }
 
@@ -166,6 +179,7 @@ func (a *api) confirmPayment(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "payment_not_found")
 		return
 	}
+	a.expireIfDue(p)
 	switch p.Status {
 	case statusCreated:
 		p.Status = statusRequiresAction

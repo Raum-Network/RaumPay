@@ -254,6 +254,30 @@ func mustAtoi(s string) int64 {
 	return n
 }
 
+func TestExpiry(t *testing.T) {
+	a := newTestAPI(t)
+	h := a.handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, "exp1", `{"amount":700,"currency":"INR","merchant_reference":"ORDER-EXP"}`)
+	var created struct{ ID string }
+	json.Unmarshal(rec.Body.Bytes(), &created)
+
+	a.mu.Lock()
+	a.payments[created.ID].ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	a.mu.Unlock()
+
+	got := doJSON(t, h, http.MethodGet, "/v1/payments/"+created.ID, testMerchantKey, "", "")
+	var afterRead struct{ Status string }
+	json.Unmarshal(got.Body.Bytes(), &afterRead)
+	if afterRead.Status != statusExpired {
+		t.Fatalf("want EXPIRED on read, got %q", afterRead.Status)
+	}
+
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+created.ID+"/confirm", testSimulatorKey, "", ""); rec.Code != http.StatusConflict {
+		t.Fatalf("confirm on expired: want 409, got %d", rec.Code)
+	}
+}
+
 func TestWebhookRetriesUntilSuccess(t *testing.T) {
 	const whSecret = "whsec-retry"
 	var mu sync.Mutex
