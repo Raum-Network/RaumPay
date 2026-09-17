@@ -80,6 +80,7 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string, st *sto
 func (a *api) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/payments", a.requireKey(a.merchantKey, a.createPayment))
+	mux.HandleFunc("GET /v1/payments", a.requireKey(a.merchantKey, a.listPayments))
 	mux.HandleFunc("GET /v1/payments/{id}", a.requireKey(a.merchantKey, a.getPayment))
 	mux.HandleFunc("POST /v1/payments/{id}/confirm", a.requireKey(a.simulatorKey, a.confirmPayment))
 	mux.HandleFunc("POST /v1/qr", a.requireKey(a.merchantKey, a.createDynamicQR))
@@ -183,6 +184,22 @@ func (a *api) expireIfDue(p *payment) {
 			p.Status = statusExpired
 		}
 	}
+}
+
+func (a *api) listPayments(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]map[string]any, 0, len(a.payments))
+	for _, p := range a.payments {
+		a.expireIfDue(p)
+		out = append(out, map[string]any{
+			"id": p.ID, "status": p.Status, "amount": p.AmountPaise,
+			"currency": p.Currency, "provider": p.Provider,
+			"merchant_reference": p.MerchantRef, "completed_at": p.CompletedAt,
+		})
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"payments": out})
 }
 
 func (a *api) getPayment(w http.ResponseWriter, r *http.Request) {
