@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { createPayment } from "@/lib/api";
 
-export default function CreatePaymentForm() {
+export default function CreatePaymentForm({ createAction }: {
+  createAction: (amount: number, reference: string, idempotencyKey: string) => Promise<{ ok: boolean; error?: string }>;
+}) {
   const router = useRouter();
   const [amount, setAmount] = useState("");
   const [reference, setReference] = useState("");
@@ -24,11 +25,11 @@ export default function CreatePaymentForm() {
     }
     setBusy(true);
     setError(null);
-    const res = await createPayment(
+    const res = await createAction(
       Math.round(rupees * 100),
       reference.trim(),
       crypto.randomUUID(),
-    );
+    ).catch(() => ({ ok: false, error: "Payment creation failed; check payment history before retrying" }));
     setBusy(false);
     if (!res.ok) {
       setError(res.error ?? "Payment creation failed");

@@ -28,10 +28,10 @@ These are product goals, not a claim that all capabilities are production-ready.
 | Payment lifecycle | Simulator-driven transitions and 15-minute expiry checked on access | No bank confirmation or real settlement |
 | Idempotency | Required key for payment creation; identical request bodies reuse the payment | In-memory lookup; no restart-safe guarantees |
 | Dynamic QR payloads | Creates a QR identifier, custom URI payload, amount, and expiry | No QR image rendering or verified wallet interoperability |
-| Refunds | Full/partial mock refunds for successful payments; sequential over-refund validation | Immediate simulated success, not a provider reversal; concurrent safety needs further work |
-| Webhooks | Signed `payment.succeeded` events; background delivery with backoff and jitter | In-memory queue; retry exhaustion needs correction before reliable use |
-| Merchant dashboard | Next.js payment listing/detail pages, create form, and refund action | UI scaffold; authentication and browser/server integration are incomplete |
-| Hosted checkout | Amount and placeholder URI display; status polling component | Polling proxy route is missing; not a working wallet checkout |
+| Refunds | Full/partial mock refunds for successful payments; atomic, overflow-safe over-refund validation | Immediate simulated success, not a provider reversal |
+| Webhooks | Signed `payment.succeeded` events; background delivery with backoff, jitter, and a five-attempt limit | In-memory queue; no durable delivery log or replay |
+| Merchant dashboard | Next.js payment listing/detail pages, create form, and refund action; server action keeps the merchant key server-side | UI scaffold; merchant authentication is not implemented |
+| Hosted checkout | Amount and placeholder URI display; same-origin status polling proxy | Not a working wallet checkout |
 | PostgreSQL | Optional schema creation and best-effort payment/idempotency writes | Reads remain in memory; persisted state is not restored on restart |
 | Infrastructure | OCI Terraform proof-of-concept configuration | Not a complete deployment, cost guarantee, or production security baseline |
 
@@ -185,7 +185,7 @@ curl --fail-with-body \
   --data '{"amount":2500,"reason":"Partial return"}'
 ```
 
-Only successful payments are eligible. The mock handler immediately advances `REFUND_REQUESTED -> REFUND_PROCESSING -> REFUNDED`. This does not transfer funds. Refund idempotency and robust concurrent reservation of refundable amounts are not implemented.
+Only successful payments are eligible. Refund creation requires an `Idempotency-Key`; identical replays return the original refund, and concurrent reservations cannot exceed the refundable amount. The mock handler immediately advances `REFUND_REQUESTED -> REFUND_PROCESSING -> REFUNDED`. This does not transfer funds.
 
 ### Create a mock QR payload
 
@@ -210,7 +210,7 @@ When configured, the worker sends `payment.succeeded` events containing an event
 
 To verify an event, compute HMAC-SHA256 with the shared secret over `timestamp + "." + raw_request_body` and compare signatures in constant time. Reject stale timestamps using an appropriate replay window and deduplicate event IDs before applying business effects. Return a 2xx response after accepting the event.
 
-The queue uses exponential backoff and jitter and declares a five-attempt limit. **The current dispatcher does not exclude exhausted jobs, so five attempts is not an enforced maximum.** Delivery state is not durable and there is no replay/dead-letter interface. Treat webhook delivery as experimental.
+The queue uses exponential backoff and jitter and enforces a five-attempt limit. Exhausted jobs are no longer dispatched. Delivery state is not durable and there is no replay/dead-letter interface. Treat webhook delivery as experimental.
 
 ## Dashboard development
 
@@ -226,7 +226,7 @@ npm run dev -- --hostname 127.0.0.1
 
 Open `http://127.0.0.1:3000`. Pages include the payment list, `/payments/{id}`, and `/checkout/{id}`.
 
-**Known integration gaps:** the create form imports an API helper into client code without a completed server-side proxy/action boundary; its private environment configuration and authentication do not form a working browser integration. The checkout component polls `/checkout/api/{id}`, but no corresponding route or rewrite is implemented. Merchant login and authorization are absent. Do not expose this dashboard publicly or work around these gaps by publishing merchant credentials to the browser.
+Payment creation runs through a server action; the API client is server-only and merchant credentials remain on the server. Checkout polls the same-origin `/checkout/api/{id}` route. **Known integration gaps:** merchant login and authorization are absent. Keep the dashboard bound to localhost; do not expose it publicly or publish merchant credentials to the browser.
 
 ## Validation
 
@@ -236,7 +236,7 @@ go test ./...
 go vet ./...
 ```
 
-The Go suite covers authentication, validation, idempotent replay and concurrent creation, the simulated success flow, signed webhooks and retry-to-success, checkout status, expiry, refund guards, and QR validation. Passing tests do not establish production readiness or real-provider compatibility.
+The Go suite covers authentication, validation, idempotent replay and concurrent creation, the simulated success flow, signed webhooks, retry-to-success and retry exhaustion, checkout status, expiry, concurrent and overflow-safe refund guards, and QR validation. Passing tests do not establish production readiness or real-provider compatibility.
 
 The frontend provides `npm run build`; it does not currently define a test or lint script.
 
@@ -250,7 +250,7 @@ Review Terraform plans, account quotas, security lists, credentials, regional ca
 
 These are proposed next steps, not delivery commitments:
 
-1. **Complete the local demo:** fix dashboard server boundaries, checkout polling, QR/payment association, retry exhaustion, and concurrency edge cases.
+1. **Complete the local demo:** finish QR/payment association and verify the browser journey. Dashboard server boundaries, checkout polling, retry exhaustion, and atomic refund limits are implemented.
 2. **Make storage authoritative:** database-backed reads, transactional writes, durable idempotency, refund reservations, migrations, and restart recovery.
 3. **Make event delivery reliable:** durable outbox, bounded retries, delivery logs, replay tools, and operational alerts.
 4. **Integrate authorized providers:** replace the mock adapter with provider-approved payment, status, QR, and refund flows and validate them in provider sandboxes.

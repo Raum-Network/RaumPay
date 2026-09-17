@@ -42,6 +42,7 @@ type api struct {
 }
 
 type idemRecord struct {
+	refundID  string
 	paymentID string
 	bodyHash  [sha256.Size]byte
 }
@@ -157,13 +158,15 @@ func (a *api) createPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	a.payments[p.ID] = p
 	a.idem[idem] = idemRecord{paymentID: p.ID, bodyHash: sha256.Sum256(body)}
+	snapshot := *p
+	record := a.idem[idem]
 	a.persist(func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := a.st.savePayment(bgCtx, p); err != nil {
+		if err := a.st.savePayment(bgCtx, &snapshot); err != nil {
 			slog.Error("persist payment failed", "payment_id", p.ID, "error", err)
 		}
-		if err := a.st.saveIdem(bgCtx, idem, a.idem[idem]); err != nil {
+		if err := a.st.saveIdem(bgCtx, idem, record); err != nil {
 			slog.Error("persist idempotency failed", "key", idem, "error", err)
 		}
 	})
@@ -191,11 +194,11 @@ func (a *api) expireIfDue(p *payment) {
 // no merchant references, no amounts beyond what the payer already knows.
 func (a *api) checkoutStatus(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	p := a.payments[r.PathValue("id")]
 	if p != nil {
 		a.expireIfDue(p)
 	}
-	a.mu.Unlock()
 	if p == nil {
 		httpError(w, http.StatusNotFound, "payment_not_found")
 		return

@@ -1,4 +1,4 @@
-import { listPayments, type Payment } from "@/lib/api";
+import { createPayment, listPayments, type Payment } from "@/lib/api";
 import CreatePaymentForm from "@/components/create-payment-form";
 import styles from "./page.module.css";
 
@@ -25,7 +25,17 @@ export default async function Home() {
           Local sandbox · Digital Rupee (e₹) · provider: mock_cbdc
         </p>
         {error && <p className={styles.error}>{error}</p>}
-        <CreatePaymentForm />
+        <CreatePaymentForm createAction={async (amount, reference, idempotencyKey) => {
+          "use server";
+          if (!Number.isSafeInteger(amount) || amount <= 0 || typeof reference !== "string" || !reference.trim() || typeof idempotencyKey !== "string" || !idempotencyKey) {
+            return { ok: false, error: "Invalid payment details" };
+          }
+          try {
+            return await createPayment(amount, reference.trim(), idempotencyKey);
+          } catch {
+            return { ok: false, error: "RaumPay API unreachable" };
+          }
+        }} />
         <table className={styles.table}>
           <thead>
             <tr>

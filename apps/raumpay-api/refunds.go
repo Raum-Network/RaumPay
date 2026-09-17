@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -42,17 +45,35 @@ func (a *api) createRefund(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "validation_failed")
 		return
 	}
+	idem := r.Header.Get("Idempotency-Key")
+	if idem == "" {
+		httpError(w, http.StatusBadRequest, "idempotency_key_required")
+		return
+	}
+	bodyHash := sha256.Sum256(body)
 
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if prev, ok := a.idem[idem]; ok {
+		if prev.bodyHash != bodyHash || prev.refundID == "" {
+			httpError(w, http.StatusUnprocessableEntity, "idempotency_key_reused")
+			return
+		}
+		rf := a.refunds[prev.refundID]
+		if rf == nil {
+			httpError(w, http.StatusNotFound, "refund_not_found")
+			return
+		}
+		a.writeRefund(w, rf, http.StatusOK)
+		return
+	}
 	p := a.payments[r.PathValue("id")]
 	if p == nil {
-		a.mu.Unlock()
 		httpError(w, http.StatusNotFound, "payment_not_found")
 		return
 	}
 	a.expireIfDue(p)
 	if p.Status != statusSucceeded {
-		a.mu.Unlock()
 		httpError(w, http.StatusConflict, "payment_not_refundable")
 		return
 	}
@@ -62,8 +83,7 @@ func (a *api) createRefund(w http.ResponseWriter, r *http.Request) {
 			refundedPaise += rf.AmountPaise
 		}
 	}
-	if refundedPaise+req.Amount > p.AmountPaise {
-		a.mu.Unlock()
+	if req.Amount > p.AmountPaise-refundedPaise {
 		httpError(w, http.StatusUnprocessableEntity, "refund_exceeds_payment")
 		return
 	}
@@ -74,23 +94,28 @@ func (a *api) createRefund(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now().UTC(),
 	}
 	a.refunds[rf.ID] = rf
-	a.mu.Unlock()
+	record := idemRecord{refundID: rf.ID, bodyHash: bodyHash}
+	a.idem[idem] = record
 
 	// mock_cbdc: confirm immediately through the state machine.
-	a.mu.Lock()
 	if rf.Status == refundRequested {
 		rf.Status = refundProcessing
 		rf.Status = refunded
+		rf.CompletedAt = time.Now().UTC()
+		snapshot := *rf
+		a.persist(func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := a.st.saveRefund(bgCtx, &snapshot); err != nil {
+				slog.Error("persist refund failed", "refund_id", snapshot.ID, "error", err)
+			}
+			if err := a.st.saveIdem(bgCtx, idem, record); err != nil {
+				slog.Error("persist refund idempotency failed", "key", idem, "error", err)
+			}
+		})
 	}
 	snapshot := *rf
-	a.mu.Unlock()
-
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{
-		"id": snapshot.ID, "payment_id": snapshot.PaymentID,
-		"status": snapshot.Status, "amount": snapshot.AmountPaise,
-		"reason": snapshot.Reason,
-	})
+	a.writeRefund(w, &snapshot, http.StatusCreated)
 }
 
 func (a *api) getRefund(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +126,11 @@ func (a *api) getRefund(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "refund_not_found")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	a.writeRefund(w, rf, http.StatusOK)
+}
+
+func (a *api) writeRefund(w http.ResponseWriter, rf *refund, code int) {
+	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]any{
 		"id": rf.ID, "payment_id": rf.PaymentID,
 		"status": rf.Status, "amount": rf.AmountPaise, "reason": rf.Reason,

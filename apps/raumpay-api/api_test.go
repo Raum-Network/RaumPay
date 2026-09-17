@@ -320,7 +320,7 @@ func TestRefundHappyPath(t *testing.T) {
 	h := newTestAPI(t).handler()
 	payID := succeedPayment(t, h, "rf1")
 
-	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":2500,"reason":"order_cancelled"}`)
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "rf1-"+payID, `{"amount":2500,"reason":"order_cancelled"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("refund: got %d %s", rec.Code, rec.Body.String())
 	}
@@ -344,7 +344,7 @@ func TestRefundPartialThenExceedBlocked(t *testing.T) {
 	h := newTestAPI(t).handler()
 	payID := succeedPayment(t, h, "rf2")
 
-	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":1000,"reason":"partial"}`)
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "rf2-"+payID, `{"amount":1000,"reason":"partial"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("partial refund: got %d %s", rec.Code, rec.Body.String())
 	}
@@ -355,7 +355,7 @@ func TestRefundPartialThenExceedBlocked(t *testing.T) {
 	if rf.Status != refunded {
 		t.Fatalf("partial refund status: want REFUNDED, got %q", rf.Status)
 	}
-	rec = doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":1501,"reason":"over"}`)
+	rec = doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "rf2-over-"+payID, `{"amount":1501,"reason":"over"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("over-refund: want 422, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -365,17 +365,113 @@ func TestRefundGuards(t *testing.T) {
 	h := newTestAPI(t).handler()
 	payID := succeedPayment(t, h, "rf3")
 
-	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testSimulatorKey, "", `{"amount":100}`); rec.Code != http.StatusUnauthorized {
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testSimulatorKey, "rf3-sim", `{"amount":100}`); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("simulator key must not refund: got %d", rec.Code)
 	}
-	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":0}`); rec.Code != http.StatusBadRequest {
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "rf3-zero", `{"amount":0}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad amount: want 400, got %d", rec.Code)
 	}
-	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/pay_er_nope/refunds", testMerchantKey, "", `{"amount":100}`); rec.Code != http.StatusNotFound {
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/pay_er_nope/refunds", testMerchantKey, "rf3-missing", `{"amount":100}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing payment: want 404, got %d", rec.Code)
 	}
 	if rec := doJSON(t, h, http.MethodGet, "/v1/refunds/ref_nope", testMerchantKey, "", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing refund: want 404, got %d", rec.Code)
+	}
+}
+
+func TestRefundIdempotentReplay(t *testing.T) {
+	handler := newTestAPI(t).handler()
+	paymentID := succeedPayment(t, handler, "refund-idem")
+	first := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "refund-key", `{"amount":2500,"reason":"same"}`)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first refund: %d", first.Code)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(first.Body.Bytes(), &created)
+	replay := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "refund-key", `{"amount":2500,"reason":"same"}`)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("refund replay: %d", replay.Code)
+	}
+	var replayed struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(replay.Body.Bytes(), &replayed)
+	if replayed.ID != created.ID {
+		t.Fatalf("refund replay created new refund: %q != %q", replayed.ID, created.ID)
+	}
+	reused := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "refund-key", `{"amount":2500,"reason":"different"}`)
+	if reused.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("idempotency reuse: want 422, got %d", reused.Code)
+	}
+	if rec := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "", `{"amount":2500,"reason":"x"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing refund idempotency key: want 400, got %d", rec.Code)
+	}
+}
+
+func TestRefundAmountCannotOverflow(t *testing.T) {
+	handler := newTestAPI(t).handler()
+	paymentID := succeedPayment(t, handler, "refund-overflow")
+	first := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "overflow-first", `{"amount":1}`)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("initial refund: %d", first.Code)
+	}
+	result := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "overflow-second", `{"amount":9223372036854775807}`)
+	if result.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("overflow refund: want 422, got %d", result.Code)
+	}
+}
+
+func TestConcurrentRefundsCannotExceedPayment(t *testing.T) {
+	handler := newTestAPI(t).handler()
+	for round := 0; round < 100; round++ {
+		paymentID := succeedPayment(t, handler, "concurrent-refund-"+strconv.Itoa(round))
+		start := make(chan struct{})
+		results := make(chan int, 16)
+		for request := 0; request < cap(results); request++ {
+			go func() {
+				<-start
+				result := doJSON(t, handler, http.MethodPost, "/v1/payments/"+paymentID+"/refunds", testMerchantKey, "refund-"+strconv.Itoa(round)+"-"+strconv.Itoa(request), `{"amount":2500}`)
+				results <- result.Code
+			}()
+		}
+		close(start)
+		created := 0
+		for request := 0; request < cap(results); request++ {
+			switch status := <-results; status {
+			case http.StatusCreated:
+				created++
+			case http.StatusUnprocessableEntity:
+			default:
+				t.Fatalf("unexpected refund status: %d", status)
+			}
+		}
+		if created != 1 {
+			t.Fatalf("want one full refund, got %d", created)
+		}
+	}
+}
+
+func TestWebhookStopsAfterRetryLimit(t *testing.T) {
+	hits := 0
+	merchant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer merchant.Close()
+	service, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, "retry-secret", &store{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.enqueueWebhook(payment{ID: "retry-limit"})
+	job := service.webhookJobs[0]
+	for attempt := 0; attempt < maxWebhookAttempts+2; attempt++ {
+		job.nextAt = time.Now().Add(-time.Second)
+		service.dispatchDueWebhooks()
+	}
+	if hits != maxWebhookAttempts || job.attempt != maxWebhookAttempts || job.delivered {
+		t.Fatalf("retry limit not respected: hits=%d, attempts=%d, delivered=%v", hits, job.attempt, job.delivered)
 	}
 }
 

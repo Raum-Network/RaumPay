@@ -1,3 +1,5 @@
+import "server-only";
+
 export type Payment = {
   id: string;
   status: string;

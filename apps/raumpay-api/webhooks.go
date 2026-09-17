@@ -56,7 +56,7 @@ func (a *api) dispatchDueWebhooks() {
 	now := time.Now()
 	due := make([]*webhookJob, 0, 4)
 	for _, j := range a.webhookJobs {
-		if !j.delivered && j.nextAt.Before(now) {
+		if !j.delivered && j.attempt < maxWebhookAttempts && j.nextAt.Before(now) {
 			due = append(due, j)
 		}
 	}
