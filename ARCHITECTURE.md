@@ -20,8 +20,8 @@ flowchart TB
             API["Merchant-key authenticated endpoints<br/>Payments, dynamic QR, refunds"]
             Public["Public checkout endpoint<br/>Payment ID and status only"]
             Confirm["Simulator-key authenticated confirmation"]
-            Core["Sandbox payment and refund state machines<br/>mock_cbdc provider; idempotency; expiry"]
-            Memory[("In-memory state<br/>Payments, refunds, idempotency, QR records")]
+            Core["Sandbox payment lifecycle and immediate mock refunds<br/>mock_cbdc provider; idempotency; expiry"]
+            Memory[("In-memory state<br/>Payments, refunds, idempotency")]
             Worker["In-process webhook queue and worker<br/>Payment success events; retries"]
         end
         DB[("Optional PostgreSQL<br/>Best-effort asynchronous writes<br/>No startup read-back")]

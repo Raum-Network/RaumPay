@@ -10,12 +10,7 @@ import (
 	"time"
 )
 
-const (
-	refundRequested  = "REFUND_REQUESTED"
-	refundProcessing = "REFUND_PROCESSING"
-	refunded         = "REFUNDED"
-	refundFailed     = "REFUND_FAILED"
-)
+const refunded = "REFUNDED"
 
 type refund struct {
 	ID, PaymentID, Status, Reason string
@@ -23,10 +18,6 @@ type refund struct {
 	CreatedAt, CompletedAt        time.Time
 }
 
-// ponytail: refund state machine mirrors Plan-2 §16 (SUCCEEDED →
-// REFUND_REQUESTED → REFUND_PROCESSING → REFUNDED|REFUND_FAILED); no
-// provider-side reversal call yet since only mock_cbdc exists. Wire the real
-// adapter call into transitionRefund when the HDFC adapter lands.
 func (a *api) createRefund(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
@@ -90,32 +81,25 @@ func (a *api) createRefund(w http.ResponseWriter, r *http.Request) {
 
 	rf := &refund{
 		ID: a.newID("ref_"), PaymentID: p.ID, AmountPaise: req.Amount,
-		Reason: req.Reason, Status: refundRequested,
-		CreatedAt: time.Now().UTC(),
+		Reason: req.Reason, Status: refunded,
+		CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC(),
 	}
 	a.refunds[rf.ID] = rf
 	record := idemRecord{refundID: rf.ID, bodyHash: bodyHash}
 	a.idem[idem] = record
 
-	// mock_cbdc: confirm immediately through the state machine.
-	if rf.Status == refundRequested {
-		rf.Status = refundProcessing
-		rf.Status = refunded
-		rf.CompletedAt = time.Now().UTC()
-		snapshot := *rf
-		a.persist(func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := a.st.saveRefund(bgCtx, &snapshot); err != nil {
-				slog.Error("persist refund failed", "refund_id", snapshot.ID, "error", err)
-			}
-			if err := a.st.saveIdem(bgCtx, idem, record); err != nil {
-				slog.Error("persist refund idempotency failed", "key", idem, "error", err)
-			}
-		})
-	}
 	snapshot := *rf
-	a.writeRefund(w, &snapshot, http.StatusCreated)
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.st.saveRefund(bgCtx, &snapshot); err != nil {
+			slog.Error("persist refund failed", "refund_id", snapshot.ID, "error", err)
+		}
+		if err := a.st.saveIdem(bgCtx, idem, record); err != nil {
+			slog.Error("persist refund idempotency failed", "key", idem, "error", err)
+		}
+	}()
+	a.writeRefund(w, rf, http.StatusCreated)
 }
 
 func (a *api) getRefund(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,21 +40,13 @@ func (a *api) createDynamicQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	qrID := a.newID("qr_")
 	now := time.Now().UTC()
 	expiresAt := now.Add(15 * time.Minute)
 
 	// ponytail: raw CBDC payload string only, no PNG/SVG rendering — checkout UI
 	// or a JS lib renders it; add image generation when hosted checkout needs it.
-	payload := "raumpay://cbdc/qr/" + qrID + "?amount=" + json.Number(int64ToString(req.AmountPaise)).String()
-
-	a.qrs[qrID] = &qrCode{
-		ID: qrID, AmountPaise: req.AmountPaise, MerchantRef: req.MerchantRef,
-		Payload: payload, CreatedAt: now, ExpiresAt: expiresAt, Status: "ACTIVE",
-	}
+	payload := "raumpay://cbdc/qr/" + qrID + "?amount=" + strconv.FormatInt(req.AmountPaise, 10)
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]any{
@@ -63,36 +56,4 @@ func (a *api) createDynamicQR(w http.ResponseWriter, r *http.Request) {
 		"expires_at": expiresAt.Format(time.RFC3339),
 		"status":     "ACTIVE",
 	})
-}
-
-type qrCode struct {
-	ID          string
-	AmountPaise int64
-	MerchantRef string
-	Payload     string
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	Status      string
-}
-
-func int64ToString(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
 }

@@ -539,11 +539,21 @@ func TestDynamicQR(t *testing.T) {
 	if qr.ID == "" || !strings.HasPrefix(qr.ID, "qr_") {
 		t.Fatalf("bad QR id %q", qr.ID)
 	}
-	if !strings.Contains(qr.Payload, "raumpay://cbdc/qr/") || !strings.Contains(qr.Payload, "amount=1250") {
+	if qr.Payload != "raumpay://cbdc/qr/"+qr.ID+"?amount=1250" {
 		t.Fatalf("bad payload %q", qr.Payload)
 	}
 	if qr.Amount != 1250 {
 		t.Fatalf("bad amount %d", qr.Amount)
+	}
+	rec = doJSON(t, h, http.MethodPost, "/v1/qr", testMerchantKey, "", `{"amount":9223372036854775807,"merchant_reference":"MAX"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("max amount: want 201, got %d", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &qr); err != nil {
+		t.Fatal(err)
+	}
+	if qr.Payload != "raumpay://cbdc/qr/"+qr.ID+"?amount=9223372036854775807" {
+		t.Fatalf("bad max amount payload: %q", qr.Payload)
 	}
 
 	if rec := doJSON(t, h, http.MethodPost, "/v1/qr", testSimulatorKey, "", `{"amount":100,"merchant_reference":"X"}`); rec.Code != http.StatusUnauthorized {
