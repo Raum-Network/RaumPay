@@ -30,6 +30,7 @@ type api struct {
 	payments    map[string]*payment
 	idem        map[string]idemRecord
 	qrs         map[string]*qrCode
+	refunds     map[string]*refund
 	webhookJobs []*webhookJob
 	merchantKey,
 	simulatorKey []byte
@@ -65,6 +66,7 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, 
 		payments:      map[string]*payment{},
 		idem:          map[string]idemRecord{},
 		qrs:           map[string]*qrCode{},
+		refunds:       map[string]*refund{},
 		merchantKey:   []byte(merchantKey),
 		simulatorKey:  []byte(simulatorKey),
 		webhookURL:    webhookURL,
@@ -77,6 +79,8 @@ func (a *api) handler() http.Handler {
 	mux.HandleFunc("GET /v1/payments/{id}", a.requireKey(a.merchantKey, a.getPayment))
 	mux.HandleFunc("POST /v1/payments/{id}/confirm", a.requireKey(a.simulatorKey, a.confirmPayment))
 	mux.HandleFunc("POST /v1/qr", a.requireKey(a.merchantKey, a.createDynamicQR))
+	mux.HandleFunc("POST /v1/payments/{id}/refunds", a.requireKey(a.merchantKey, a.createRefund))
+	mux.HandleFunc("GET /v1/refunds/{id}", a.requireKey(a.merchantKey, a.getRefund))
 	return a.securityHeaders(mux)
 }
 

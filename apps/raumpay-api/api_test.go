@@ -278,6 +278,81 @@ func TestExpiry(t *testing.T) {
 	}
 }
 
+func succeedPayment(t *testing.T, h http.Handler, idem string) string {
+	t.Helper()
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, idem, `{"amount":2500,"currency":"INR","merchant_reference":"ORDER-RF"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+	var created struct{ ID string }
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	confirmFlow(t, h, created.ID)
+	return created.ID
+}
+
+func TestRefundHappyPath(t *testing.T) {
+	h := newTestAPI(t).handler()
+	payID := succeedPayment(t, h, "rf1")
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":2500,"reason":"order_cancelled"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("refund: got %d %s", rec.Code, rec.Body.String())
+	}
+	var rf struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Amount int64  `json:"amount"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &rf)
+	if rf.Status != refunded || rf.Amount != 2500 {
+		t.Fatalf("bad refund: %+v", rf)
+	}
+
+	got := doJSON(t, h, http.MethodGet, "/v1/refunds/"+rf.ID, testMerchantKey, "", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("get refund: got %d", got.Code)
+	}
+}
+
+func TestRefundPartialThenExceedBlocked(t *testing.T) {
+	h := newTestAPI(t).handler()
+	payID := succeedPayment(t, h, "rf2")
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":1000,"reason":"partial"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("partial refund: got %d %s", rec.Code, rec.Body.String())
+	}
+	var rf struct {
+		Status string `json:"status"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &rf)
+	if rf.Status != refunded {
+		t.Fatalf("partial refund status: want REFUNDED, got %q", rf.Status)
+	}
+	rec = doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":1501,"reason":"over"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("over-refund: want 422, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRefundGuards(t *testing.T) {
+	h := newTestAPI(t).handler()
+	payID := succeedPayment(t, h, "rf3")
+
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testSimulatorKey, "", `{"amount":100}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("simulator key must not refund: got %d", rec.Code)
+	}
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/"+payID+"/refunds", testMerchantKey, "", `{"amount":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad amount: want 400, got %d", rec.Code)
+	}
+	if rec := doJSON(t, h, http.MethodPost, "/v1/payments/pay_er_nope/refunds", testMerchantKey, "", `{"amount":100}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing payment: want 404, got %d", rec.Code)
+	}
+	if rec := doJSON(t, h, http.MethodGet, "/v1/refunds/ref_nope", testMerchantKey, "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing refund: want 404, got %d", rec.Code)
+	}
+}
+
 func TestWebhookRetriesUntilSuccess(t *testing.T) {
 	const whSecret = "whsec-retry"
 	var mu sync.Mutex
