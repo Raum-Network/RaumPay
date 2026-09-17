@@ -1,5 +1,5 @@
-api
-raumpay-api
+/apps/raumpay-api/api
+/apps/raumpay-api/raumpay-api
 *.env
 .terraform/
 *.tfstate
