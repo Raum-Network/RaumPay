@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -247,4 +248,40 @@ func TestWebhookOnSuccess(t *testing.T) {
 func mustAtoi(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+func TestDynamicQR(t *testing.T) {
+	h := newTestAPI(t).handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/qr", testMerchantKey, "", `{"amount":1250,"merchant_reference":"POS-91827"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", rec.Code)
+	}
+	var qr struct {
+		ID      string `json:"id"`
+		Payload string `json:"payload"`
+		Amount  int64  `json:"amount"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &qr); err != nil {
+		t.Fatal(err)
+	}
+	if qr.ID == "" || !strings.HasPrefix(qr.ID, "qr_") {
+		t.Fatalf("bad QR id %q", qr.ID)
+	}
+	if !strings.Contains(qr.Payload, "raumpay://cbdc/qr/") || !strings.Contains(qr.Payload, "amount=1250") {
+		t.Fatalf("bad payload %q", qr.Payload)
+	}
+	if qr.Amount != 1250 {
+		t.Fatalf("bad amount %d", qr.Amount)
+	}
+
+	if rec := doJSON(t, h, http.MethodPost, "/v1/qr", testSimulatorKey, "", `{"amount":100,"merchant_reference":"X"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("simulator key must not create QR: got %d", rec.Code)
+	}
+	if rec := doJSON(t, h, http.MethodPost, "/v1/qr", testMerchantKey, "", `{"amount":0,"merchant_reference":"X"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for bad amount, got %d", rec.Code)
+	}
+	if rec := doJSON(t, h, http.MethodPost, "/v1/qr", testMerchantKey, "", `{"amount":100,"merchant_reference":"X","rail":"UPI"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for UPI rail, got %d", rec.Code)
+	}
 }

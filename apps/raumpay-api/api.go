@@ -29,6 +29,7 @@ type api struct {
 	mu       sync.Mutex
 	payments map[string]*payment
 	idem     map[string]idemRecord
+	qrs      map[string]*qrCode
 	merchantKey,
 	simulatorKey []byte
 	webhookURL    string
@@ -62,6 +63,7 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, 
 	return &api{
 		payments:      map[string]*payment{},
 		idem:          map[string]idemRecord{},
+		qrs:           map[string]*qrCode{},
 		merchantKey:   []byte(merchantKey),
 		simulatorKey:  []byte(simulatorKey),
 		webhookURL:    webhookURL,
@@ -74,6 +76,7 @@ func (a *api) handler() http.Handler {
 	mux.HandleFunc("POST /v1/payments", a.requireKey(a.merchantKey, a.createPayment))
 	mux.HandleFunc("GET /v1/payments/{id}", a.requireKey(a.merchantKey, a.getPayment))
 	mux.HandleFunc("POST /v1/payments/{id}/confirm", a.requireKey(a.simulatorKey, a.confirmPayment))
+	mux.HandleFunc("POST /v1/qr", a.requireKey(a.merchantKey, a.createDynamicQR))
 	return a.securityHeaders(mux)
 }
 
