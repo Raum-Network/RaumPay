@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -206,6 +207,9 @@ func TestWebhookOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.startWebhookWorker(ctx)
 	h := a.handler()
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, "wh1", `{"amount":2500,"currency":"INR","merchant_reference":"ORDER-WH"}`)
@@ -248,6 +252,52 @@ func TestWebhookOnSuccess(t *testing.T) {
 func mustAtoi(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+func TestWebhookRetriesUntilSuccess(t *testing.T) {
+	const whSecret = "whsec-retry"
+	var mu sync.Mutex
+	var hits int
+	merchant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		n := hits
+		mu.Unlock()
+		if n < 3 {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer merchant.Close()
+
+	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.startWebhookWorker(ctx)
+	h := a.handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, "retry1", `{"amount":500,"currency":"INR","merchant_reference":"ORDER-RETRY"}`)
+	var created struct{ ID string }
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	confirmFlow(t, h, created.ID)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		mu.Lock()
+		n := hits
+		mu.Unlock()
+		if n >= 3 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("webhook not retried to success, hits=%d", n)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func TestDynamicQR(t *testing.T) {

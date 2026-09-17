@@ -26,10 +26,11 @@ const (
 const maxBodyBytes = 64 << 10
 
 type api struct {
-	mu       sync.Mutex
-	payments map[string]*payment
-	idem     map[string]idemRecord
-	qrs      map[string]*qrCode
+	mu          sync.Mutex
+	payments    map[string]*payment
+	idem        map[string]idemRecord
+	qrs         map[string]*qrCode
+	webhookJobs []*webhookJob
 	merchantKey,
 	simulatorKey []byte
 	webhookURL    string
@@ -70,7 +71,6 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, 
 		webhookSecret: []byte(webhookSecret),
 	}, nil
 }
-
 func (a *api) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/payments", a.requireKey(a.merchantKey, a.createPayment))
@@ -181,7 +181,7 @@ func (a *api) confirmPayment(w http.ResponseWriter, r *http.Request) {
 		p.CompletedAt = time.Now().UTC()
 		snapshot := *p
 		a.mu.Unlock()
-		a.deliverWebhook(snapshot)
+		a.enqueueWebhook(snapshot)
 		a.mu.Lock()
 	}
 	a.writePayment(w, id, http.StatusOK)
