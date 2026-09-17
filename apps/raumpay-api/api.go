@@ -31,6 +31,8 @@ type api struct {
 	idem     map[string]idemRecord
 	merchantKey,
 	simulatorKey []byte
+	webhookURL    string
+	webhookSecret []byte
 }
 
 type idemRecord struct {
@@ -50,15 +52,20 @@ type createReq struct {
 	MerchantRef string `json:"merchant_reference"`
 }
 
-func newAPI(merchantKey, simulatorKey string) (*api, error) {
+func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, error) {
 	if merchantKey == "" || simulatorKey == "" {
 		return nil, errors.New("RAUMPAY_MERCHANT_KEY and RAUMPAY_SIMULATOR_KEY must be set (e.g. openssl rand -hex 32)")
 	}
+	if webhookURL != "" && webhookSecret == "" {
+		return nil, errors.New("RAUMPAY_WEBHOOK_SECRET is required when RAUMPAY_WEBHOOK_URL is set")
+	}
 	return &api{
-		payments:     map[string]*payment{},
-		idem:         map[string]idemRecord{},
-		merchantKey:  []byte(merchantKey),
-		simulatorKey: []byte(simulatorKey),
+		payments:      map[string]*payment{},
+		idem:          map[string]idemRecord{},
+		merchantKey:   []byte(merchantKey),
+		simulatorKey:  []byte(simulatorKey),
+		webhookURL:    webhookURL,
+		webhookSecret: []byte(webhookSecret),
 	}, nil
 }
 
@@ -169,6 +176,10 @@ func (a *api) confirmPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Status == statusSucceeded {
 		p.CompletedAt = time.Now().UTC()
+		snapshot := *p
+		a.mu.Unlock()
+		a.deliverWebhook(snapshot)
+		a.mu.Lock()
 	}
 	a.writePayment(w, id, http.StatusOK)
 }

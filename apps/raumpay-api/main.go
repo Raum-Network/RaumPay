@@ -16,7 +16,8 @@ func main() {
 		slog.Error("set RAUMPAY_MODE=sandbox; this local prototype cannot run in production")
 		os.Exit(1)
 	}
-	api, err := newAPI(os.Getenv("RAUMPAY_MERCHANT_KEY"), os.Getenv("RAUMPAY_SIMULATOR_KEY"))
+	api, err := newAPI(os.Getenv("RAUMPAY_MERCHANT_KEY"), os.Getenv("RAUMPAY_SIMULATOR_KEY"),
+		os.Getenv("RAUMPAY_WEBHOOK_URL"), os.Getenv("RAUMPAY_WEBHOOK_SECRET"))
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)

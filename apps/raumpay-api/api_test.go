@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -16,7 +22,7 @@ const (
 
 func newTestAPI(t *testing.T) *api {
 	t.Helper()
-	a, err := newAPI(testMerchantKey, testSimulatorKey)
+	a, err := newAPI(testMerchantKey, testSimulatorKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,4 +181,70 @@ func TestConcurrentIdempotentCreates(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("want 1 payment, got %d", count)
 	}
+}
+
+func TestWebhookOnSuccess(t *testing.T) {
+	const whSecret = "whsec-test"
+	got := make(chan struct {
+		Sig       string
+		Timestamp string
+		Body      []byte
+	}, 1)
+	merchant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got <- struct {
+			Sig       string
+			Timestamp string
+			Body      []byte
+		}{r.Header.Get("X-ERupee-Signature"), r.Header.Get("X-ERupee-Timestamp"), body}
+		w.WriteHeader(200)
+	}))
+	defer merchant.Close()
+
+	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := a.handler()
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/payments", testMerchantKey, "wh1", `{"amount":2500,"currency":"INR","merchant_reference":"ORDER-WH"}`)
+	var created struct{ ID string }
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	confirmFlow(t, h, created.ID)
+
+	select {
+	case w := <-got:
+		mac := hmac.New(sha256.New, []byte(whSecret))
+		mac.Write([]byte(w.Timestamp + "." + string(w.Body)))
+		want := hex.EncodeToString(mac.Sum(nil))
+		if w.Sig != want {
+			t.Fatalf("signature mismatch: got %q want %q", w.Sig, want)
+		}
+		if _, err := strconv.ParseInt(w.Timestamp, 10, 64); err != nil {
+			t.Fatalf("bad timestamp %q: %v", w.Timestamp, err)
+		}
+		if time.Since(time.Unix(mustAtoi(w.Timestamp), 0)) > time.Minute {
+			t.Fatal("timestamp too old")
+		}
+		var evt struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Data struct {
+				PaymentID string `json:"payment_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body, &evt); err != nil {
+			t.Fatalf("bad event json: %v", err)
+		}
+		if evt.Type != "payment.succeeded" || evt.Data.PaymentID != created.ID || evt.ID == "" {
+			t.Fatalf("bad event: %+v", evt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("webhook never delivered")
+	}
+}
+
+func mustAtoi(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
 }
