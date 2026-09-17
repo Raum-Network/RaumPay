@@ -1,3 +1,7 @@
 api
 raumpay-api
 *.env
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
