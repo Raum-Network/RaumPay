@@ -66,15 +66,6 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 	payment_id TEXT NOT NULL,
 	body_hash BYTEA NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL
-);
-CREATE TABLE IF NOT EXISTS qr_codes (
-	id TEXT PRIMARY KEY,
-	amount_paise BIGINT NOT NULL,
-	merchant_reference TEXT NOT NULL,
-	payload TEXT NOT NULL,
-	status TEXT NOT NULL,
-	created_at TIMESTAMPTZ NOT NULL,
-	expires_at TIMESTAMPTZ NOT NULL
 );`)
 	return err
 }
@@ -111,17 +102,6 @@ func (s *store) saveIdem(ctx context.Context, key string, rec idemRecord) error 
 	_, err := s.pool.Exec(ctx, `INSERT INTO idempotency_keys (key, payment_id, body_hash, created_at)
 		VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO NOTHING`,
 		key, rec.paymentID, rec.bodyHash[:], time.Now().UTC())
-	return err
-}
-
-func (s *store) saveQR(ctx context.Context, q *qrCode) error {
-	if s.pool == nil {
-		return nil
-	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO qr_codes
-		(id, amount_paise, merchant_reference, payload, status, created_at, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`,
-		q.ID, q.AmountPaise, q.MerchantRef, q.Payload, q.Status, q.CreatedAt, q.ExpiresAt)
 	return err
 }
 

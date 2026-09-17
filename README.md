@@ -44,7 +44,7 @@ These are product goals, not a claim that all capabilities are production-ready.
 5. The merchant updates the order after verifying the payment status or signed webhook.
 6. If needed, the merchant requests a refund and tracks its outcome.
 
-**In the current sandbox, step 4 is performed manually through the simulator-only confirmation endpoint.** The QR endpoint creates a separate QR record; it does not link a wallet payment to a payment record. The checkout page's URI is also a placeholder, not a bank-issued payment instruction.
+**In the current sandbox, step 4 is performed manually through the simulator-only confirmation endpoint.** The QR endpoint returns a standalone payload without retaining a QR record; it does not link a wallet payment to a payment record. The checkout page's URI is also a placeholder, not a bank-issued payment instruction.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ Merchant application / local dashboard
             |          |
             |          +--> in-memory webhook queue --> merchant receiver
             |
-            +--> in-memory payment, refund, QR, and idempotency maps
+            +--> in-memory payment, refund, and idempotency maps
             |
             +--> optional PostgreSQL best-effort writes
             |
@@ -185,7 +185,7 @@ curl --fail-with-body \
   --data '{"amount":2500,"reason":"Partial return"}'
 ```
 
-Only successful payments are eligible. Refund creation requires an `Idempotency-Key`; identical replays return the original refund, and concurrent reservations cannot exceed the refundable amount. The mock handler immediately advances `REFUND_REQUESTED -> REFUND_PROCESSING -> REFUNDED`. This does not transfer funds.
+Only successful payments are eligible. Refund creation requires an `Idempotency-Key`; identical replays return the original refund, and concurrent reservations cannot exceed the refundable amount. The mock handler creates refunds directly as `REFUNDED`. This does not transfer funds.
 
 ### Create a mock QR payload
 

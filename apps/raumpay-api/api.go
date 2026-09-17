@@ -32,7 +32,6 @@ type api struct {
 	st          *store
 	payments    map[string]*payment
 	idem        map[string]idemRecord
-	qrs         map[string]*qrCode
 	refunds     map[string]*refund
 	webhookJobs []*webhookJob
 	merchantKey,
@@ -70,7 +69,6 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string, st *sto
 		st:            st,
 		payments:      map[string]*payment{},
 		idem:          map[string]idemRecord{},
-		qrs:           map[string]*qrCode{},
 		refunds:       map[string]*refund{},
 		merchantKey:   []byte(merchantKey),
 		simulatorKey:  []byte(simulatorKey),
@@ -160,7 +158,7 @@ func (a *api) createPayment(w http.ResponseWriter, r *http.Request) {
 	a.idem[idem] = idemRecord{paymentID: p.ID, bodyHash: sha256.Sum256(body)}
 	snapshot := *p
 	record := a.idem[idem]
-	a.persist(func() {
+	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := a.st.savePayment(bgCtx, &snapshot); err != nil {
@@ -169,15 +167,8 @@ func (a *api) createPayment(w http.ResponseWriter, r *http.Request) {
 		if err := a.st.saveIdem(bgCtx, idem, record); err != nil {
 			slog.Error("persist idempotency failed", "key", idem, "error", err)
 		}
-	})
+	}()
 	a.writePayment(w, p.ID, http.StatusCreated)
-}
-
-// persist runs fn in the background so Postgres hiccups don't block responses;
-// in-memory maps remain the read path in this POC. ponytail: best-effort writes,
-// no read-back yet — add DB-backed reads when restart-survival is required.
-func (a *api) persist(fn func()) {
-	go fn()
 }
 
 // expireIfDue flips non-final payments past their expiry to EXPIRED.
@@ -257,13 +248,13 @@ func (a *api) confirmPayment(w http.ResponseWriter, r *http.Request) {
 	if p.Status == statusSucceeded {
 		p.CompletedAt = time.Now().UTC()
 		snapshot := *p
-		a.persist(func() {
+		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := a.st.savePayment(bgCtx, &snapshot); err != nil {
 				slog.Error("persist payment failed", "payment_id", snapshot.ID, "error", err)
 			}
-		})
+		}()
 		a.mu.Unlock()
 		a.enqueueWebhook(snapshot)
 		a.mu.Lock()
