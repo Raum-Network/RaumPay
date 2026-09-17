@@ -24,7 +24,7 @@ const (
 
 func newTestAPI(t *testing.T) *api {
 	t.Helper()
-	a, err := newAPI(testMerchantKey, testSimulatorKey, "", "")
+	a, err := newAPI(testMerchantKey, testSimulatorKey, "", "", &store{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestWebhookOnSuccess(t *testing.T) {
 	}))
 	defer merchant.Close()
 
-	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret)
+	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret, &store{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestWebhookRetriesUntilSuccess(t *testing.T) {
 	}))
 	defer merchant.Close()
 
-	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret)
+	a, err := newAPI(testMerchantKey, testSimulatorKey, merchant.URL, whSecret, &store{})
 	if err != nil {
 		t.Fatal(err)
 	}

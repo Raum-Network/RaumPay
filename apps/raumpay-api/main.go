@@ -16,8 +16,12 @@ func main() {
 		slog.Error("set RAUMPAY_MODE=sandbox; this local prototype cannot run in production")
 		os.Exit(1)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	st, closeStore := newStore(ctx)
+	defer closeStore()
 	api, err := newAPI(os.Getenv("RAUMPAY_MERCHANT_KEY"), os.Getenv("RAUMPAY_SIMULATOR_KEY"),
-		os.Getenv("RAUMPAY_WEBHOOK_URL"), os.Getenv("RAUMPAY_WEBHOOK_SECRET"))
+		os.Getenv("RAUMPAY_WEBHOOK_URL"), os.Getenv("RAUMPAY_WEBHOOK_SECRET"), st)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
@@ -28,8 +32,6 @@ func main() {
 		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 		MaxHeaderBytes: 8192,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	api.startWebhookWorker(ctx)
 	go func() {
 		<-ctx.Done()

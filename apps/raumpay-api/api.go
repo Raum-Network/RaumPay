@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +29,7 @@ const maxBodyBytes = 64 << 10
 
 type api struct {
 	mu          sync.Mutex
+	st          *store
 	payments    map[string]*payment
 	idem        map[string]idemRecord
 	qrs         map[string]*qrCode
@@ -55,7 +58,7 @@ type createReq struct {
 	MerchantRef string `json:"merchant_reference"`
 }
 
-func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, error) {
+func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string, st *store) (*api, error) {
 	if merchantKey == "" || simulatorKey == "" {
 		return nil, errors.New("RAUMPAY_MERCHANT_KEY and RAUMPAY_SIMULATOR_KEY must be set (e.g. openssl rand -hex 32)")
 	}
@@ -63,6 +66,7 @@ func newAPI(merchantKey, simulatorKey, webhookURL, webhookSecret string) (*api, 
 		return nil, errors.New("RAUMPAY_WEBHOOK_SECRET is required when RAUMPAY_WEBHOOK_URL is set")
 	}
 	return &api{
+		st:            st,
 		payments:      map[string]*payment{},
 		idem:          map[string]idemRecord{},
 		qrs:           map[string]*qrCode{},
@@ -151,7 +155,24 @@ func (a *api) createPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	a.payments[p.ID] = p
 	a.idem[idem] = idemRecord{paymentID: p.ID, bodyHash: sha256.Sum256(body)}
+	a.persist(func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.st.savePayment(bgCtx, p); err != nil {
+			slog.Error("persist payment failed", "payment_id", p.ID, "error", err)
+		}
+		if err := a.st.saveIdem(bgCtx, idem, a.idem[idem]); err != nil {
+			slog.Error("persist idempotency failed", "key", idem, "error", err)
+		}
+	})
 	a.writePayment(w, p.ID, http.StatusCreated)
+}
+
+// persist runs fn in the background so Postgres hiccups don't block responses;
+// in-memory maps remain the read path in this POC. ponytail: best-effort writes,
+// no read-back yet — add DB-backed reads when restart-survival is required.
+func (a *api) persist(fn func()) {
+	go fn()
 }
 
 // expireIfDue flips non-final payments past their expiry to EXPIRED.
@@ -198,6 +219,13 @@ func (a *api) confirmPayment(w http.ResponseWriter, r *http.Request) {
 	if p.Status == statusSucceeded {
 		p.CompletedAt = time.Now().UTC()
 		snapshot := *p
+		a.persist(func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := a.st.savePayment(bgCtx, &snapshot); err != nil {
+				slog.Error("persist payment failed", "payment_id", snapshot.ID, "error", err)
+			}
+		})
 		a.mu.Unlock()
 		a.enqueueWebhook(snapshot)
 		a.mu.Lock()
